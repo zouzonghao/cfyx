@@ -1,0 +1,33 @@
+# Binaries
+cf-optimizer
+nexttrace
+sq2csv
+
+# Database
+ip_data.db
+
+# CSV exports
+ip_info.csv
+
+# Config (contains secrets)
+config.yaml
+
+# Debug files
+debug.html
+
+# Go module cache (optional, comment out if you want to commit)
+# go.sum
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
