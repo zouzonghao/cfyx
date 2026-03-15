@@ -2,14 +2,12 @@ version: '3.8'
 
 services:
   cf-optimizer:
-    image: your-dockerhub-username/cf-optimizer:latest
+    image: sanqi37/cfyx:latest
     container_name: cf-optimizer
     restart: unless-stopped
     ports:
       - "37377:37377"
     volumes:
-      # Persist database data
-      - cf_data:/root
       # Mount config file (required)
       - ./config.yaml:/root/config.yaml:ro
 
