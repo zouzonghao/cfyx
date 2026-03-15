@@ -7,11 +7,11 @@ import (
 	"os"
 	"strconv"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/glebarez/go-sqlite"
 )
 
 func main() {
-	db, err := sql.Open("sqlite3", "./ip_data.db")
+	db, err := sql.Open("sqlite", "./ip_data.db")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}

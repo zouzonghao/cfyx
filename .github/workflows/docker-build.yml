@@ -113,21 +113,17 @@ jobs:
 
       - name: Build for AMD64
         run: |
-          GOOS=linux GOARCH=amd64 go build -o cf-optimizer-linux-amd64 .
-          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o cf-optimizer-linux-amd64-static .
+          GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -o cf-optimizer-linux-amd64 .
 
       - name: Build for ARM64
         run: |
-          GOOS=linux GOARCH=arm64 go build -o cf-optimizer-linux-arm64 .
-          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o cf-optimizer-linux-arm64-static .
+          GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -o cf-optimizer-linux-arm64 .
 
       - name: Upload Release Assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             cf-optimizer-linux-amd64
-            cf-optimizer-linux-amd64-static
             cf-optimizer-linux-arm64
-            cf-optimizer-linux-arm64-static
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

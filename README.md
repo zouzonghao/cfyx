@@ -404,7 +404,10 @@ hostMap:
 ```
 http://localhost:37377/gethosts
 ```
-
+### 构建
+```
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cf-optimizer-linux-arm64 .
+```
 ---
 
 ## 十一、技术特点

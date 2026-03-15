@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
+	_ "github.com/glebarez/go-sqlite"
 )
 
 var (
@@ -17,7 +17,7 @@ var (
 // InitDB initializes the SQLite database connection.
 func InitDB(filepath string) {
 	var err error
-	DB, err = sql.Open("sqlite3", filepath)
+	DB, err = sql.Open("sqlite", filepath)
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
