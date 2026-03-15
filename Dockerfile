@@ -19,6 +19,8 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then \
 ARG TARGETARCH
 COPY binaries/cf-optimizer-linux-${TARGETARCH} cf-optimizer
 
+RUN chmod +x cf-optimizer
+
 EXPOSE 37377
 
 CMD ["./cf-optimizer"]

@@ -10,4 +10,8 @@ services:
     volumes:
       # Mount config file (required)
       - ./config.yaml:/root/config.yaml:ro
-
+    logging:
+      driver: "local"
+      options:
+        max-size: "1m"
+        max-file: "3"
