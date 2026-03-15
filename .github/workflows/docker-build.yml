@@ -14,8 +14,17 @@ jobs:
   build-binary:
     strategy:
       matrix:
-        arch: [amd64, arm64]
-    runs-on: ubuntu-latest
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            arch: amd64
+          - os: ubuntu-latest
+            goos: linux
+            arch: arm64
+          - os: macos-latest
+            goos: darwin
+            arch: arm64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -23,16 +32,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24'
+          cache: true 
 
       - name: Build binary
         run: |
-          GOOS=linux GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
-            go build -o cf-optimizer-linux-${{ matrix.arch }} .
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.arch }} CGO_ENABLED=0 \
+            go build -o cf-optimizer-${{ matrix.goos }}-${{ matrix.arch }} .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: cf-optimizer-linux-${{ matrix.arch }}
-          path: cf-optimizer-linux-${{ matrix.arch }}
+          name: cf-optimizer-${{ matrix.goos }}-${{ matrix.arch }}
+          path: cf-optimizer-${{ matrix.goos }}-${{ matrix.arch }}
           retention-days: 1
 
   build-docker:
@@ -44,9 +54,12 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: cf-optimizer-linux-*
+          name: cf-optimizer-linux-amd64
           path: ./binaries
-          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: cf-optimizer-linux-arm64
+          path: ./binaries
 
       - uses: docker/login-action@v3
         with:
@@ -89,7 +102,7 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          pattern: cf-optimizer-linux-*
+          pattern: cf-optimizer-*
           path: .
           merge-multiple: true
 
@@ -98,5 +111,6 @@ jobs:
           files: |
             cf-optimizer-linux-amd64
             cf-optimizer-linux-arm64
+            cf-optimizer-darwin-arm64
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
