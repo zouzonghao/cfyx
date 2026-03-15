@@ -11,6 +11,8 @@ ip_info.csv
 
 # Config (contains secrets)
 config.yaml
+.env
+docker-compose.yml
 
 # Debug files
 debug.html

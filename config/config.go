@@ -24,6 +24,7 @@ type AppConfig struct {
 	GroupRules map[string][][]string `yaml:"groupRules"`
 	HostMap    map[string]HostInfo   `yaml:"hostMap"`
 	Cloudflare CloudflareConfig      `yaml:"cloudflare"`
+	FullMode   bool                  `yaml:"fullMode"`
 }
 
 var (
