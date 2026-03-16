@@ -135,12 +135,12 @@ func main() {
 	config.LoadConfig(configPath)
 
 	if config.Current.Timezone != "" {
-		if loc, err := time.LoadLocation(config.Current.Timezone); err != nil {
-			log.Printf("Warning: invalid timezone %q: %v, using local time.", config.Current.Timezone, err)
-		} else {
+		if loc, err := time.LoadLocation(config.Current.Timezone); err == nil {
 			time.Local = loc
-			log.SetFlags(log.LstdFlags)
-			log.Printf("Timezone set to %s.", config.Current.Timezone)
+		} else if offset, err := time.ParseDuration(config.Current.Timezone); err == nil {
+			time.Local = time.FixedZone("Custom", int(offset.Seconds()))
+		} else {
+			log.Printf("Warning: invalid timezone %q, using local time.", config.Current.Timezone)
 		}
 	}
 
