@@ -25,6 +25,7 @@ type AppConfig struct {
 	HostMap    map[string]HostInfo   `yaml:"hostMap"`
 	Cloudflare CloudflareConfig      `yaml:"cloudflare"`
 	FullMode   bool                  `yaml:"fullMode"`
+	Timezone   string                `yaml:"timezone"`
 }
 
 var (

@@ -133,6 +133,17 @@ func main() {
 
 	configPath, _ := filepath.Abs("config.yaml")
 	config.LoadConfig(configPath)
+
+	if config.Current.Timezone != "" {
+		if loc, err := time.LoadLocation(config.Current.Timezone); err != nil {
+			log.Printf("Warning: invalid timezone %q: %v, using local time.", config.Current.Timezone, err)
+		} else {
+			time.Local = loc
+			log.SetFlags(log.LstdFlags)
+			log.Printf("Timezone set to %s.", config.Current.Timezone)
+		}
+	}
+
 	database.InitDB("./ip_data.db")
 	defer database.DB.Close()
 
