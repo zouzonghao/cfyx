@@ -4,6 +4,7 @@ import (
 	"cf-optimizer/config"
 	"cf-optimizer/database"
 	"cf-optimizer/modes"
+	"cf-optimizer/verifier"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -146,6 +147,18 @@ func main() {
 
 	database.InitDB("./ip_data.db")
 	defer database.DB.Close()
+
+	if config.Current.Vless != "" {
+		if err := verifier.Init(config.Current.Vless, config.Current.VerifyURL); err != nil {
+			log.Fatalf("Failed to initialize VLESS verifier: %v", err)
+		}
+		if err := verifier.CheckXrayBinary(); err != nil {
+			log.Fatalf("VLESS verification is configured but xray binary is unavailable: %v", err)
+		}
+		log.Println("VLESS verification enabled.")
+	} else {
+		log.Println("VLESS verification disabled (no vless URL configured).")
+	}
 
 	// Use flag value if provided, otherwise use config file value
 	useFullMode := *fullMode || config.Current.FullMode

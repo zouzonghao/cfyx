@@ -26,6 +26,8 @@ type AppConfig struct {
 	Cloudflare CloudflareConfig      `yaml:"cloudflare"`
 	FullMode   bool                  `yaml:"fullMode"`
 	Timezone   string                `yaml:"timezone"`
+	Vless      string                `yaml:"vless"`
+	VerifyURL  string                `yaml:"verifyURL"`
 }
 
 var (

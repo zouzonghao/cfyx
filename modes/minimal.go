@@ -4,10 +4,10 @@ import (
 	"cf-optimizer/cloudflare"
 	"cf-optimizer/config"
 	"cf-optimizer/database"
-	"cf-optimizer/latency"
 	"cf-optimizer/providers"
 	"cf-optimizer/tracer"
 	"cf-optimizer/utils"
+	"cf-optimizer/verifier"
 	"log"
 	"sync"
 	"time"
@@ -118,7 +118,7 @@ func runLatencyTestAndDNSUpdateMinimal() {
 		wg.Add(1)
 		go func(groupName string) {
 			defer wg.Done()
-			bestIP, _ := findBestIPForGroupMinimal(groupName, 5, 1)
+			bestIP := findVerifiedIPForGroupMinimal(groupName, 5, 1)
 			if bestIP != "" {
 				resultsChan <- minimalGroupTestResult{groupName: groupName, bestIP: bestIP}
 			}
@@ -147,48 +147,28 @@ func runLatencyTestAndDNSUpdateMinimal() {
 	log.Println("Minimal mode: Finished DNS updates.")
 }
 
-func findBestIPForGroupMinimal(groupName string, latestLimit int, testsPerIP int) (string, time.Duration) {
-	ips, err := database.GetLatestIPsByGroup(groupName, latestLimit)
-	if err != nil {
-		log.Printf("Minimal mode: Error getting IPs for group %s: %v", groupName, err)
-		return "", 0
-	}
-	if len(ips) == 0 {
-		log.Printf("Minimal mode: No IPs found for group %s", groupName)
-		return "", 0
+// findVerifiedIPForGroupMinimal ranks IPs by latency then verifies each with
+// xray, falling back to the next candidate on failure.
+func findVerifiedIPForGroupMinimal(groupName string, latestLimit, testsPerIP int) string {
+	ranked := findBestIPsForGroup(groupName, latestLimit, testsPerIP)
+	if len(ranked) == 0 {
+		return ""
 	}
 
-	log.Printf("Minimal mode: Testing %d IPs for group %s...", len(ips), groupName)
-	var bestIP string
-	var minAvgLatency time.Duration
+	if !verifier.Enabled() {
+		return ranked[0].IP
+	}
 
-	for _, ip := range ips {
-		var totalLatency time.Duration
-		var successfulTests int
-		for i := 0; i < testsPerIP; i++ {
-			lat, err := latency.Measure(ip)
-			if err != nil {
-				log.Printf("Minimal mode: Test %d/%d for IP %s failed: %v", i+1, testsPerIP, ip, err)
-			} else {
-				totalLatency += lat
-				successfulTests++
-				log.Printf("Minimal mode: Test %d/%d for IP %s (group: %s): latency=%v", i+1, testsPerIP, ip, groupName, lat)
-			}
-			time.Sleep(1 * time.Second)
+	for i, entry := range ranked {
+		log.Printf("Minimal mode: Verifying IP %s (rank %d/%d, latency %v) for group %s",
+			entry.IP, i+1, len(ranked), entry.Latency, groupName)
+		if verifier.VerifyIP(entry.IP) {
+			log.Printf("Minimal mode: IP %s verified for group %s", entry.IP, groupName)
+			return entry.IP
 		}
-
-		if successfulTests > 0 {
-			avgLatency := totalLatency / time.Duration(successfulTests)
-			log.Printf("Minimal mode: Average latency for IP %s: %v", ip, avgLatency)
-			if minAvgLatency == 0 || avgLatency < minAvgLatency {
-				minAvgLatency = avgLatency
-				bestIP = ip
-			}
-		}
+		log.Printf("Minimal mode: IP %s failed verification, trying next candidate", entry.IP)
 	}
 
-	if bestIP != "" {
-		log.Printf("Minimal mode: Best IP for group %s is %s with latency %v", groupName, bestIP, minAvgLatency)
-	}
-	return bestIP, minAvgLatency
+	log.Printf("Minimal mode: All %d IPs failed verification for group %s, skipping DNS update", len(ranked), groupName)
+	return ""
 }

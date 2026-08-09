@@ -2,9 +2,10 @@
 cf-optimizer
 nexttrace
 sq2csv
-
+*.sh
 # Database
 ip_data.db
+xray
 
 # CSV exports
 ip_info.csv

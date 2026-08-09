@@ -7,7 +7,9 @@ import (
 	"cf-optimizer/latency"
 	"cf-optimizer/providers"
 	"cf-optimizer/tracer"
+	"cf-optimizer/verifier"
 	"log"
+	"sort"
 	"sync"
 	"time"
 )
@@ -128,6 +130,12 @@ type groupTestResult struct {
 	bestIP    string
 }
 
+// ipWithLatency pairs an IP with its measured average latency.
+type ipWithLatency struct {
+	IP      string
+	Latency time.Duration
+}
+
 func runLatencyTestAndDNSUpdate() {
 	log.Println("Starting latency tests and DNS updates...")
 
@@ -143,7 +151,7 @@ func runLatencyTestAndDNSUpdate() {
 		wg.Add(1)
 		go func(groupName string) {
 			defer wg.Done()
-			bestIP, _ := findBestIPForGroup(groupName)
+			bestIP := findVerifiedIPForGroup(groupName)
 			if bestIP != "" {
 				resultsChan <- groupTestResult{groupName: groupName, bestIP: bestIP}
 			}
@@ -171,33 +179,71 @@ func runLatencyTestAndDNSUpdate() {
 	log.Println("Finished latency tests and DNS updates.")
 }
 
-// findBestIPForGroup performs latency tests for a given group and returns the best IP.
+// findVerifiedIPForGroup ranks IPs by latency then verifies each with xray,
+// falling back to the next candidate on failure. Returns the first IP that
+// passes verification, or the best-latency IP when verification is disabled.
+// Returns empty string when no IP is available or all fail verification.
+func findVerifiedIPForGroup(groupName string) string {
+	ranked := findBestIPsForGroup(groupName, 5, 5)
+	if len(ranked) == 0 {
+		return ""
+	}
+
+	if !verifier.Enabled() {
+		return ranked[0].IP
+	}
+
+	for i, entry := range ranked {
+		log.Printf("Verifying IP %s (rank %d/%d, latency %v) for group %s",
+			entry.IP, i+1, len(ranked), entry.Latency, groupName)
+		if verifier.VerifyIP(entry.IP) {
+			log.Printf("IP %s verified for group %s", entry.IP, groupName)
+			return entry.IP
+		}
+		log.Printf("IP %s failed verification, trying next candidate", entry.IP)
+	}
+
+	log.Printf("All %d IPs failed verification for group %s, skipping DNS update", len(ranked), groupName)
+	return ""
+}
+
+// findBestIPForGroup returns the single best IP by latency for use by the
+// /gethosts handler. It does not run xray verification.
 func findBestIPForGroup(groupName string) (string, time.Duration) {
-	ips, err := database.GetLatestIPsByGroup(groupName, 5)
+	ranked := findBestIPsForGroup(groupName, 5, 5)
+	if len(ranked) == 0 {
+		return "", 0
+	}
+	return ranked[0].IP, ranked[0].Latency
+}
+
+// findBestIPsForGroup performs latency tests and returns IPs sorted from
+// lowest to highest average latency.
+func findBestIPsForGroup(groupName string, latestLimit, testsPerIP int) []ipWithLatency {
+	ips, err := database.GetLatestIPsByGroup(groupName, latestLimit)
 	if err != nil {
 		log.Printf("Error getting IPs for group %s: %v", groupName, err)
-		return "", 0
+		return nil
 	}
 	if len(ips) == 0 {
 		log.Printf("No IPs found for group %s", groupName)
-		return "", 0
+		return nil
 	}
 
 	log.Printf("Testing %d IPs for group %s...", len(ips), groupName)
-	var bestIP string
-	var minAvgLatency time.Duration
+	var results []ipWithLatency
 
 	for _, ip := range ips {
 		var totalLatency time.Duration
 		var successfulTests int
-		for i := 0; i < 5; i++ {
+		for i := 0; i < testsPerIP; i++ {
 			lat, err := latency.Measure(ip)
 			if err != nil {
-				log.Printf("Test %d/%d for IP %s failed: %v", i+1, 5, ip, err)
+				log.Printf("Test %d/%d for IP %s failed: %v", i+1, testsPerIP, ip, err)
 			} else {
 				totalLatency += lat
 				successfulTests++
-				log.Printf("Test %d/%d for IP %s (group: %s): latency=%v", i+1, 5, ip, groupName, lat)
+				log.Printf("Test %d/%d for IP %s (group: %s): latency=%v", i+1, testsPerIP, ip, groupName, lat)
 			}
 			time.Sleep(1 * time.Second)
 		}
@@ -205,15 +251,16 @@ func findBestIPForGroup(groupName string) (string, time.Duration) {
 		if successfulTests > 0 {
 			avgLatency := totalLatency / time.Duration(successfulTests)
 			log.Printf("Average latency for IP %s: %v", ip, avgLatency)
-			if minAvgLatency == 0 || avgLatency < minAvgLatency {
-				minAvgLatency = avgLatency
-				bestIP = ip
-			}
+			results = append(results, ipWithLatency{IP: ip, Latency: avgLatency})
 		}
 	}
 
-	if bestIP != "" {
-		log.Printf("Best IP for group %s is %s with latency %v", groupName, bestIP, minAvgLatency)
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].Latency < results[j].Latency
+	})
+
+	if len(results) > 0 {
+		log.Printf("Best IP for group %s is %s with latency %v", groupName, results[0].IP, results[0].Latency)
 	}
-	return bestIP, minAvgLatency
+	return results
 }

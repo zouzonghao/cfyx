@@ -2,7 +2,7 @@
 
 ## 项目概述
 
-cf-optimizer 是一个自动化的 Cloudflare IP 优选系统，通过路由追踪、延迟测试和 DNS 自动更新，为不同域名选择经过特定地理位置的最优 Cloudflare IP。
+cf-optimizer 是一个自动化的 Cloudflare IP 优选系统，通过路由追踪、延迟测试、VLESS 可用性验证和 DNS 自动更新，为不同域名选择经过特定地理位置的最优 Cloudflare IP。
 
 ---
 
@@ -231,13 +231,15 @@ hostMap:
 ```
 从数据库获取每个分组的前 5 个 IP
     ↓
-对每个 IP 进行 10 次延迟测试
+对每个 IP 进行 1 次延迟测试
     ↓
-计算平均延迟
+计算平均延迟，按延迟升序排序
     ↓
-选择延迟最低的 IP
+对排名第一的 IP 进行 VLESS 可用性验证
     ↓
-更新 DNS
+验证通过 → 使用该 IP；失败 → 回退到下一个 IP
+    ↓
+所有 IP 均失败 → 跳过该分组的 DNS 更新
 ```
 
 #### 完整模式
@@ -247,19 +249,42 @@ hostMap:
     ↓
 对每个 IP 进行 5 次延迟测试
     ↓
-计算平均延迟
+计算平均延迟，按延迟升序排序
     ↓
-选择延迟最低的 IP
+对排名第一的 IP 进行 VLESS 可用性验证
     ↓
-更新 DNS
+验证通过 → 使用该 IP；失败 → 回退到下一个 IP
+    ↓
+所有 IP 均失败 → 跳过该分组的 DNS 更新
 ```
 
-### 4. DNS 更新阶段
+### 4. VLESS 验证阶段（可选）
+
+通过启动临时 xray 实例验证 IP 是否真正可用于 VLESS 代理。解决了"ping 通但无法用于 VLESS"的问题。
+
+```
+用优选 IP 替换 VLESS URL 中的地址
+    ↓
+生成 xray 配置（ws + tls + vless）
+    ↓
+启动 xray 实例监听本地随机端口
+    ↓
+通过代理访问 verifyURL（默认 http://cp.cloudflare.com/generate_204）
+    ↓
+返回 200/204 → 验证通过
+返回其他状态/连接失败 → 验证失败，回退到下一个候选 IP
+```
+
+**配置说明**：
+- `vless` 留空 → 禁用验证，仅使用 ping 延迟优选
+- `vless` 配置后 → 启用验证，启动时会检查 `./xray` 是否存在，缺失即退出
+
+### 5. DNS 更新阶段
 
 ```
 根据 hostMap 确定域名-分组关系
     ↓
-获取每个分组的最优 IP
+获取每个分组通过验证的最优 IP
     ↓
 调用 Cloudflare API
     ↓
@@ -321,11 +346,27 @@ hostMap:
     id: "your_dns_record_id"
 ```
 
+### 启用 VLESS 验证
+
+在 `config.yaml` 中配置以下字段即可启用：
+
+```yaml
+# VLESS 分享链接（从客户端导出）
+vless: "vless://<uuid>@<地址>:<端口>?encryption=none&security=tls&type=ws&host=<域名>&path=<路径>#<别名>"
+# 验证 URL，通过代理访问此地址测试 IP 可用性（留空则使用默认值）
+verifyURL: "http://cp.cloudflare.com/generate_204"
+```
+
+- `vless` 留空 → 禁用验证，仅使用 ping 延迟优选
+- `vless` 配置后 → 启用验证，验证失败的 IP 会自动回退到延迟排名下一个候选
+- 所有候选 IP 均验证失败 → 跳过该分组的 DNS 更新（保留原记录不变）
+
 ### 注意事项
 
 - DNS 记录 ID 需要从 Cloudflare 控制台获取
 - 地理位置名称需与 nexttrace 返回的名称一致
 - 建议先测试路由路径再配置规则
+- 启用 VLESS 验证需要 `./xray` 二进制存在且可执行
 
 ---
 
@@ -334,7 +375,7 @@ hostMap:
 ### 精简模式
 
 - **数据源**：仅使用 uouin.com
-- **延迟测试**：每个 IP 测试 10 次
+- **延迟测试**：每个 IP 测试 1 次
 - **更新频率**：每 2 小时
 - **资源消耗**：中等
 - **适用场景**：快速部署、低资源环境
@@ -365,9 +406,16 @@ hostMap:
 
 ### latency/latency.go
 
-- 使用 curl 命令测试连接延迟
-- 通过 --resolve 参数指定 IP 地址
-- 解析 time_connect 值获取延迟
+- 使用 ping 命令测试连接延迟
+- 解析 round-trip/rtt 平均值获取延迟
+
+### verifier/verifier.go
+
+- 解析 VLESS 分享链接（UUID、地址、端口、ws、tls、host、path 等）
+- 生成 xray JSON 配置（vless + ws + tls 出站，http 入站）
+- 启动临时 xray 实例，通过代理访问 verifyURL 验证 IP 可用性
+- 验证失败时支持自动回退到下一个候选 IP
+- 依赖外部二进制 `./xray`（缺失即退出，与 `./nexttrace` 一致）
 
 ### cloudflare/cloudflare.go
 
@@ -386,6 +434,24 @@ hostMap:
 ---
 
 ## 十、使用方法
+
+### 依赖准备
+
+启动前需要准备以下二进制文件（放在项目根目录）：
+
+| 文件 | 用途 | 下载地址 |
+|------|------|----------|
+| `./nexttrace` | 路由追踪（必需） | https://github.com/nxtrace/NTrace-core/releases |
+| `./xray` | VLESS 验证（仅当配置了 `vless` 时必需） | https://github.com/XTLS/Xray-core/releases |
+
+下载后需重命名并赋予执行权限：
+
+```bash
+mv nexttrace_linux_amd64 nexttrace && chmod +x nexttrace
+unzip Xray-linux-64.zip xray -d ./ && chmod +x xray
+```
+
+> Docker 镜像会自动下载这两个二进制，无需手动准备。
 
 ### 启动精简模式
 
@@ -415,8 +481,9 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cf-optimizer-linux-arm64 .
 1. **并发处理**：使用 goroutine 和 sync.WaitGroup 实现并发 IP 获取和测试
 2. **数据持久化**：使用 SQLite 存储 IP 历史数据
 3. **路由分析**：集成 nexttrace 进行精确的地理位置分析
-4. **自动化**：定时任务自动执行 IP 获取、测试和 DNS 更新
-5. **容错机制**：对网络请求和命令执行进行错误处理
+4. **VLESS 可用性验证**：通过临时 xray 实例验证 IP 是否真正可用于代理，解决 ping 通但无法代理的问题，失败自动回退
+5. **自动化**：定时任务自动执行 IP 获取、测试、验证和 DNS 更新
+6. **容错机制**：对网络请求和命令执行进行错误处理，所有 IP 验证失败时保留原 DNS 记录
 
 ---
 
@@ -426,16 +493,24 @@ CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o cf-optimizer-linux-arm64 .
 - 需要根据地理位置选择最优 IP 的应用
 - 需要自动维护 DNS 记录的服务
 - 对网络延迟敏感的应用
+- 需要确保优选 IP 真正可用于 VLESS 代理的场景
 
 ---
 
 ## 十三、依赖项
 
-- `github.com/mattn/go-sqlite3`：SQLite 数据库驱动
+### 外部二进制
+
+- `./nexttrace`：路由追踪工具（[nxtrace/NTrace-core](https://github.com/nxtrace/NTrace-core)）
+- `./xray`：代理工具，用于 VLESS 验证（[XTLS/Xray-core](https://github.com/XTLS/Xray-core)，仅当配置了 `vless` 时需要）
+
+### Go 模块
+
+- `github.com/glebarez/go-sqlite`：SQLite 数据库驱动
 - `gopkg.in/yaml.v3`：YAML 配置文件解析
 
 ---
 
 ## 总结
 
-这个规则系统的核心思想是通过路由追踪和地理位置匹配，为不同域名选择经过特定地理位置的最优 Cloudflare IP，从而优化网络访问性能。系统支持灵活的规则配置、多数据源集成、自动延迟测试和 DNS 更新，是一个完整的自动化 IP 优选解决方案。
+这个规则系统的核心思想是通过路由追踪、地理位置匹配和 VLESS 可用性验证，为不同域名选择经过特定地理位置的最优 Cloudflare IP，从而优化网络访问性能。系统支持灵活的规则配置、多数据源集成、自动延迟测试、VLESS 验证回退和 DNS 更新，是一个完整的自动化 IP 优选解决方案。
