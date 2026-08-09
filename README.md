@@ -201,7 +201,7 @@ hostMap:
 ```
 从数据源获取 IP（精简：仅 uouin；完整：uouin + ipdb + 智选网）
     ↓
-精简模式：对每个源 IP 扩展为 3 个变体（末位+1 + 2 个随机末位）
+精简模式：直接使用源 IP
 完整模式：直接使用源 IP
     ↓
 去重处理
@@ -234,7 +234,7 @@ hostMap:
 ```
 查询每个 IP 的分组（新 IP 刚入库，旧 IP 从数据库读取）
     ↓
-对每个 IP 执行 3 次 ping（间隔 1 秒）
+精简模式执行 2 次 ping，完整模式执行 3 次 ping（间隔 1 秒）
     ↓
 计算平均延迟
     ↓
@@ -360,13 +360,13 @@ verifyURL: "http://cp.cloudflare.com/generate_204"
 
 ## 八、运行模式对比
 
-两种模式使用统一的处理流水线（nexttrace → ping 3 次 → 分组排序 → xray 验证前 3 → DNS 更新），区别仅在数据源范围和更新频率：
+两种模式使用统一的处理流水线（nexttrace → ping → 分组排序 → xray 验证前 3 → DNS 更新），区别在数据源范围、Ping 次数和更新频率：
 
 ### 精简模式
 
 - **数据源**：仅 uouin.com（CTCC）
-- **IP 扩展**：每个源 IP 扩展为 3 个变体（末位+1 + 2 个随机末位），增加候选多样性
-- **延迟测试**：每个 IP 测试 3 次（间隔 1 秒）
+- **IP 处理**：直接使用源 IP
+- **延迟测试**：每个 IP 测试 2 次（间隔 1 秒）
 - **验证候选**：每组延迟排名前 3
 - **更新频率**：每 2 小时
 - **适用场景**：快速部署、低资源环境
@@ -413,9 +413,6 @@ verifyURL: "http://cp.cloudflare.com/generate_204"
 - 启动临时 xray 实例，通过代理访问 verifyURL 验证 IP 可用性
 - 依赖外部二进制 `./xray`（缺失即退出，与 `./nexttrace` 一致）
 
-### utils/utils.go
-
-- `ExpandIP`：将源 IP 扩展为 3 个变体（末位+1 + 2 个随机末位），用于精简模式增加候选 IP 多样性
 
 ### cloudflare/cloudflare.go
 

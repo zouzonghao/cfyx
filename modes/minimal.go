@@ -7,7 +7,6 @@ import (
 	"cf-optimizer/latency"
 	"cf-optimizer/providers"
 	"cf-optimizer/tracer"
-	"cf-optimizer/utils"
 	"cf-optimizer/verifier"
 	"log"
 	"sort"
@@ -46,23 +45,17 @@ func fetchAndProcessMinimal() {
 	}
 	log.Printf("Minimal mode: Fetched %d IPs from UouinProvider", len(sourceIPs))
 
-	var allVariants []string
-	seen := make(map[string]struct{})
-	for _, srcIP := range sourceIPs {
-		variants, err := utils.ExpandIP(srcIP)
-		if err != nil {
-			log.Printf("Minimal mode: Error expanding IP %s: %v", srcIP, err)
+	seen := make(map[string]struct{}, len(sourceIPs))
+	uniqueIPs := make([]string, 0, len(sourceIPs))
+	for _, ip := range sourceIPs {
+		if _, ok := seen[ip]; ok {
 			continue
 		}
-		for _, v := range variants {
-			if _, ok := seen[v]; !ok {
-				seen[v] = struct{}{}
-				allVariants = append(allVariants, v)
-			}
-		}
+		seen[ip] = struct{}{}
+		uniqueIPs = append(uniqueIPs, ip)
 	}
-	log.Printf("Minimal mode: Expanded to %d unique variant IPs.", len(allVariants))
-	processIPs(allVariants, "Minimal mode")
+	log.Printf("Minimal mode: Using %d unique source IPs.", len(uniqueIPs))
+	processIPs(uniqueIPs, "Minimal mode")
 }
 
 func processIPs(ips []string, modeName string) {
@@ -90,7 +83,21 @@ func processIPs(ips []string, modeName string) {
 	updateDNS(results, modeName)
 }
 
+func groupHasHosts(group string) bool {
+	for _, hostInfo := range config.Current.HostMap {
+		if hostInfo.Group == group {
+			return true
+		}
+	}
+	return false
+}
+
 func measureIPs(ips []string, modeName string) []ipWithLatencyAndGroup {
+	pingCount := 3
+	if modeName == "Minimal mode" {
+		pingCount = 2
+	}
+
 	var results []ipWithLatencyAndGroup
 	for _, ip := range ips {
 		group, err := database.GetGroupByIP(ip)
@@ -98,18 +105,22 @@ func measureIPs(ips []string, modeName string) []ipWithLatencyAndGroup {
 			log.Printf("%s: No group found for IP %s: %v", modeName, ip, err)
 			continue
 		}
+		if !groupHasHosts(group) {
+			log.Printf("%s: IP %s belongs to group %s without configured hosts, skipping latency test.", modeName, ip, group)
+			continue
+		}
 
 		var totalLatency time.Duration
 		var successfulTests int
-		for i := 0; i < 3; i++ {
+		for i := 0; i < pingCount; i++ {
 			lat, err := latency.Measure(ip)
 			if err != nil {
-				log.Printf("%s: Ping %d/3 for IP %s failed: %v", modeName, i+1, ip, err)
+				log.Printf("%s: Ping %d/%d for IP %s failed: %v", modeName, i+1, pingCount, ip, err)
 			} else {
 				totalLatency += lat
 				successfulTests++
-				log.Printf("%s: Ping %d/3 for IP %s (group: %s): latency=%v",
-					modeName, i+1, ip, group, lat)
+				log.Printf("%s: Ping %d/%d for IP %s (group: %s): latency=%v",
+					modeName, i+1, pingCount, ip, group, lat)
 			}
 			time.Sleep(1 * time.Second)
 		}

@@ -7,8 +7,8 @@ If you are an agentic coding tool, follow these instructions exactly.
 ## Repo overview
 - Entry point: `main.go` runs a long-lived HTTP service on `:37377`.
 - Modes: full vs minimal, controlled by the `-full` flag or `fullMode` in config.
-- Both modes share a unified pipeline (`processIPs` → `measureIPs` → `updateDNS` → `verifyCandidates` in `modes/minimal.go`); they differ in data source scope, candidate IP generation, and update frequency.
-- Minimal mode: uouin only, each source IP expanded to 3 variants via `utils.ExpandIP` (末位+1 + 2 random末位), 2h interval.
+- Both modes share a unified pipeline (`processIPs` → `measureIPs` → `updateDNS` → `verifyCandidates` in `modes/minimal.go`); they differ in data source scope and update frequency.
+- Minimal mode: uouin only, source IPs used directly after deduplication, 2h interval.
 - Full mode: uouin + ipdb + zhixuanwang (concurrent fetch), source IPs used directly without expansion, 1h interval.
 - Data: SQLite at `./ip_data.db` is created on startup.
 - Config: `config.yaml` holds Cloudflare credentials, routing rules, and optional VLESS verification config.
@@ -112,7 +112,6 @@ No repo-specific linter config was found (`.golangci*` is absent).
 - `tracer.GetIPGroup` shells out to `./nexttrace`. Ensure the binary exists.
 - `latency.Measure` depends on `ping` being available in PATH (not `curl`).
 - `verifier.VerifyIP` shells out to `./xray`. Required only when `vless` is configured in `config.yaml`.
-- `utils.ExpandIP` generates 3 variant IPs (末位+1 + 2 random末位) from a source IP, used by minimal mode.
 - The service starts an HTTP server and then blocks forever (see `main.go`).
 - `tools/sq2csv.go` is a helper to export `ip_data.db` to CSV.
 - `key/main.go` is a standalone helper for generating provider API keys.
