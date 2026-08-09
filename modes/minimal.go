@@ -27,6 +27,11 @@ func RunMinimalMode() {
 }
 
 func fetchAndProcessMinimal() {
+	if config.IsManualMode() {
+		log.Println("Minimal mode: Manual mode is enabled, skipping automatic optimization.")
+		return
+	}
+
 	if !startMinimalRun() {
 		log.Println("Minimal mode: previous run still in progress, skipping.")
 		return

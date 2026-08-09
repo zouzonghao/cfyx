@@ -1,6 +1,7 @@
 package modes
 
 import (
+	"cf-optimizer/config"
 	"cf-optimizer/providers"
 	"log"
 	"sync"
@@ -20,6 +21,11 @@ func RunFullMode() {
 }
 
 func fetchAndProcess() {
+	if config.IsManualMode() {
+		log.Println("Full mode: Manual mode is enabled, skipping automatic optimization.")
+		return
+	}
+
 	if !startFullRun() {
 		log.Println("Full mode: previous run still in progress, skipping.")
 		return

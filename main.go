@@ -134,6 +134,7 @@ func main() {
 
 	configPath, _ := filepath.Abs("config.yaml")
 	config.LoadConfig(configPath)
+	modes.LoadManualIPs()
 
 	if config.Current.Timezone != "" {
 		if loc, err := time.LoadLocation(config.Current.Timezone); err == nil {
@@ -164,6 +165,8 @@ func main() {
 	useFullMode := *fullMode || config.Current.FullMode
 
 	http.HandleFunc("/gethosts", modes.GetHostsHandler)
+	http.HandleFunc("/config", modes.ConfigPageHandler)
+	http.HandleFunc("/api/manual-settings", modes.ManualSettingsHandler)
 
 	if useFullMode {
 		modes.RunFullMode()
@@ -173,6 +176,7 @@ func main() {
 
 	log.Println("Server starting on :37377...")
 	log.Println("Access http://localhost:37377/gethosts to get the hosts file.")
+	log.Println("Access http://localhost:37377/config to manage automatic and manual modes.")
 
 	go func() {
 		if err := http.ListenAndServe(":37377", nil); err != nil {
