@@ -190,7 +190,7 @@ func (c *VlessConfig) GenerateXrayConfig(ip string, localPort int) (string, erro
 	return string(data), nil
 }
 
-// CheckXrayBinary checks that the xray binary exists at ./xray/xray and is
+// CheckXrayBinary checks that the xray binary exists at ./xray and is
 // executable. Returns an error if it is missing or not executable.
 func CheckXrayBinary() error {
 	info, err := os.Stat(xrayBinaryPath)

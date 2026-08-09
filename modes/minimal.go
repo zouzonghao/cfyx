@@ -4,11 +4,13 @@ import (
 	"cf-optimizer/cloudflare"
 	"cf-optimizer/config"
 	"cf-optimizer/database"
+	"cf-optimizer/latency"
 	"cf-optimizer/providers"
 	"cf-optimizer/tracer"
 	"cf-optimizer/utils"
 	"cf-optimizer/verifier"
 	"log"
+	"sort"
 	"sync"
 	"time"
 )
@@ -32,54 +34,100 @@ func fetchAndProcessMinimal() {
 	}
 	defer finishMinimalRun()
 
-	log.Println("Starting to fetch and process IPs in minimal mode...")
-
 	provider := &providers.UouinProvider{}
-	ips, err := provider.FetchIPs()
+	sourceIPs, err := provider.FetchIPs()
 	if err != nil {
 		log.Printf("Minimal mode: Error fetching IPs from UouinProvider: %v", err)
 		return
 	}
-	if len(ips) == 0 {
+	if len(sourceIPs) == 0 {
 		log.Println("Minimal mode: No IPs found from UouinProvider.")
 		return
 	}
-	log.Printf("Minimal mode: Fetched %d IPs from UouinProvider", len(ips))
+	log.Printf("Minimal mode: Fetched %d IPs from UouinProvider", len(sourceIPs))
 
-	stopEarly := false
-
-	for _, originalIP := range ips {
-		if stopEarly {
-			break
-		}
-
-		modifiedIP, err := utils.ModifyIP(originalIP)
+	var allVariants []string
+	seen := make(map[string]struct{})
+	for _, srcIP := range sourceIPs {
+		variants, err := utils.ExpandIP(srcIP)
 		if err != nil {
-			log.Printf("Minimal mode: Error modifying IP %s: %v", originalIP, err)
+			log.Printf("Minimal mode: Error expanding IP %s: %v", srcIP, err)
 			continue
 		}
-
-		group := tracer.GetIPGroup(modifiedIP)
-		log.Printf("Minimal mode: Original IP: %s, Modified IP: %s, Group: %s", originalIP, modifiedIP, group)
-
-		// Store every processed IP to the database
-		if err := database.InsertIP(modifiedIP, group); err != nil {
-			log.Printf("Minimal mode: Error inserting IP %s into database: %v", modifiedIP, err)
+		for _, v := range variants {
+			if _, ok := seen[v]; !ok {
+				seen[v] = struct{}{}
+				allVariants = append(allVariants, v)
+			}
 		}
+	}
+	log.Printf("Minimal mode: Expanded to %d unique variant IPs.", len(allVariants))
+	processIPs(allVariants, "Minimal mode")
+}
 
-		if group == "SG_GD" {
-			log.Println("Minimal mode: Found SG_GD group. Will stop processing further IPs after this batch.")
-			stopEarly = true
+func processIPs(ips []string, modeName string) {
+	newIPs, err := database.FilterExistingIPs(ips)
+	if err != nil {
+		log.Printf("%s: Error filtering existing IPs: %v", modeName, err)
+		return
+	}
+	log.Printf("%s: %d new IPs to trace, %d already in DB.", modeName,
+		len(newIPs), len(ips)-len(newIPs))
+
+	for _, ip := range newIPs {
+		group := tracer.GetIPGroup(ip)
+		log.Printf("%s: Traced IP: %s, Group: %s", modeName, ip, group)
+		if err := database.InsertIP(ip, group); err != nil {
+			log.Printf("%s: Error inserting IP %s into database: %v", modeName, ip, err)
 		}
 	}
 
-	log.Println("Minimal mode: Finished processing IPs. Now updating DNS.")
-	runLatencyTestAndDNSUpdateMinimal()
+	results := measureIPs(ips, modeName)
+	if len(results) == 0 {
+		log.Printf("%s: No IPs with successful ping tests. Retaining previous best IPs.", modeName)
+		return
+	}
+	updateDNS(results, modeName)
+}
+
+func measureIPs(ips []string, modeName string) []ipWithLatencyAndGroup {
+	var results []ipWithLatencyAndGroup
+	for _, ip := range ips {
+		group, err := database.GetGroupByIP(ip)
+		if err != nil {
+			log.Printf("%s: No group found for IP %s: %v", modeName, ip, err)
+			continue
+		}
+
+		var totalLatency time.Duration
+		var successfulTests int
+		for i := 0; i < 3; i++ {
+			lat, err := latency.Measure(ip)
+			if err != nil {
+				log.Printf("%s: Ping %d/3 for IP %s failed: %v", modeName, i+1, ip, err)
+			} else {
+				totalLatency += lat
+				successfulTests++
+				log.Printf("%s: Ping %d/3 for IP %s (group: %s): latency=%v",
+					modeName, i+1, ip, group, lat)
+			}
+			time.Sleep(1 * time.Second)
+		}
+
+		if successfulTests > 0 {
+			avgLatency := totalLatency / time.Duration(successfulTests)
+			log.Printf("%s: IP %s (group: %s) avg latency: %v", modeName, ip, group, avgLatency)
+			results = append(results, ipWithLatencyAndGroup{IP: ip, Group: group, Latency: avgLatency})
+		}
+	}
+	return results
 }
 
 var (
 	minimalRunMu   sync.Mutex
 	minimalRunning bool
+	bestIPsMu      sync.RWMutex
+	bestIPsByGroup = make(map[string]string)
 )
 
 func startMinimalRun() bool {
@@ -98,77 +146,109 @@ func finishMinimalRun() {
 	minimalRunMu.Unlock()
 }
 
-type minimalGroupTestResult struct {
-	groupName string
-	bestIP    string
+// ipWithLatencyAndGroup pairs an IP with its routing group and measured
+// average latency, used by the shared processing pipeline.
+type ipWithLatencyAndGroup struct {
+	IP      string
+	Group   string
+	Latency time.Duration
 }
 
-func runLatencyTestAndDNSUpdateMinimal() {
-	log.Println("Minimal mode: Starting DNS updates...")
+// updateDNS groups the ping results by routing group, sorts each group by latency, verifies the top 3 candidates per group with xray, and updates
+// DNS for all hosts mapping to that group.
+func updateDNS(results []ipWithLatencyAndGroup, modeName string) {
+	log.Printf("%s: Starting DNS updates...", modeName)
 
+	// Group by group name
+	byGroup := make(map[string][]ipWithLatencyAndGroup)
+	for _, r := range results {
+		byGroup[r.Group] = append(byGroup[r.Group], r)
+	}
+
+	// Sort each group by latency (ascending)
+	for group := range byGroup {
+		sort.Slice(byGroup[group], func(i, j int) bool {
+			return byGroup[group][i].Latency < byGroup[group][j].Latency
+		})
+	}
+
+	// Collect unique groups from HostMap
 	uniqueGroups := make(map[string]struct{})
 	for _, hostInfo := range config.Current.HostMap {
 		uniqueGroups[hostInfo.Group] = struct{}{}
 	}
 
-	var wg sync.WaitGroup
-	resultsChan := make(chan minimalGroupTestResult, len(uniqueGroups))
-
+	// Verify top 3 per group with xray, collect best IP.
+	// Only groups with a verified IP this round are updated; groups without
+	// results retain their previous cached best IP (consistent with DNS
+	// update behavior, which skips groups without a verified IP).
+	updatedIPs := make(map[string]string)
 	for group := range uniqueGroups {
-		wg.Add(1)
-		go func(groupName string) {
-			defer wg.Done()
-			bestIP := findVerifiedIPForGroupMinimal(groupName, 5, 1)
-			if bestIP != "" {
-				resultsChan <- minimalGroupTestResult{groupName: groupName, bestIP: bestIP}
-			}
-		}(group)
+		groupResults, ok := byGroup[group]
+		if !ok || len(groupResults) == 0 {
+			log.Printf("%s: No IPs for group %s, skipping.", modeName, group)
+			continue
+		}
+
+		candidates := groupResults
+		if len(candidates) > 3 {
+			candidates = candidates[:3]
+		}
+
+		bestIP := verifyCandidates(modeName, group, candidates)
+		if bestIP != "" {
+			updatedIPs[group] = bestIP
+		}
 	}
 
-	wg.Wait()
-	close(resultsChan)
-
-	bestIPsByGroup := make(map[string]string)
-	for result := range resultsChan {
-		bestIPsByGroup[result.groupName] = result.bestIP
+	bestIPsMu.Lock()
+	for group, ip := range updatedIPs {
+		bestIPsByGroup[group] = ip
 	}
+	bestIPsMu.Unlock()
 
+	// Update DNS only for hosts whose group got a new verified IP this round
 	for host, hostInfo := range config.Current.HostMap {
-		if bestIP, ok := bestIPsByGroup[hostInfo.Group]; ok {
-			log.Printf("Minimal mode: Updating DNS for %s (group: %s) to IP %s", host, hostInfo.Group, bestIP)
-			err := cloudflare.UpdateDNSRecord(config.Current.Cloudflare.ZoneID, hostInfo.ID, config.Current.Cloudflare.APIToken, host, bestIP)
+		if bestIP, ok := updatedIPs[hostInfo.Group]; ok {
+			log.Printf("%s: Updating DNS for %s (group: %s) to IP %s", modeName,
+				host, hostInfo.Group, bestIP)
+			err := cloudflare.UpdateDNSRecord(
+				config.Current.Cloudflare.ZoneID,
+				hostInfo.ID,
+				config.Current.Cloudflare.APIToken,
+				host,
+				bestIP,
+			)
 			if err != nil {
-				log.Printf("Minimal mode: Error updating DNS for %s: %v", host, err)
+				log.Printf("%s: Error updating DNS for %s: %v", modeName, host, err)
 			}
 		} else {
-			log.Printf("Minimal mode: No best IP found for group %s (host: %s), skipping DNS update.", hostInfo.Group, host)
+			log.Printf("%s: No new verified IP for group %s (host: %s), skipping DNS update.", modeName,
+				hostInfo.Group, host)
 		}
 	}
-	log.Println("Minimal mode: Finished DNS updates.")
+	log.Printf("%s: Finished DNS updates.", modeName)
 }
 
-// findVerifiedIPForGroupMinimal ranks IPs by latency then verifies each with
-// xray, falling back to the next candidate on failure.
-func findVerifiedIPForGroupMinimal(groupName string, latestLimit, testsPerIP int) string {
-	ranked := findBestIPsForGroup(groupName, latestLimit, testsPerIP)
-	if len(ranked) == 0 {
-		return ""
-	}
-
+// verifyCandidates tests candidates with xray in order, returning the first
+// IP that passes. When verification is disabled, returns the lowest-latency
+// candidate directly.
+func verifyCandidates(modeName, groupName string, candidates []ipWithLatencyAndGroup) string {
 	if !verifier.Enabled() {
-		return ranked[0].IP
+		return candidates[0].IP
 	}
 
-	for i, entry := range ranked {
-		log.Printf("Minimal mode: Verifying IP %s (rank %d/%d, latency %v) for group %s",
-			entry.IP, i+1, len(ranked), entry.Latency, groupName)
-		if verifier.VerifyIP(entry.IP) {
-			log.Printf("Minimal mode: IP %s verified for group %s", entry.IP, groupName)
-			return entry.IP
+	for i, c := range candidates {
+		log.Printf("%s: Verifying IP %s (rank %d/%d, latency %v) for group %s",
+			modeName, c.IP, i+1, len(candidates), c.Latency, groupName)
+		if verifier.VerifyIP(c.IP) {
+			log.Printf("%s: IP %s verified for group %s", modeName, c.IP, groupName)
+			return c.IP
 		}
-		log.Printf("Minimal mode: IP %s failed verification, trying next candidate", entry.IP)
+		log.Printf("%s: IP %s failed verification, trying next candidate", modeName, c.IP)
 	}
 
-	log.Printf("Minimal mode: All %d IPs failed verification for group %s, skipping DNS update", len(ranked), groupName)
+	log.Printf("%s: All %d candidates failed verification for group %s, skipping DNS update",
+		modeName, len(candidates), groupName)
 	return ""
 }

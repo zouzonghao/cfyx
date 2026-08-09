@@ -163,8 +163,6 @@ func main() {
 	// Use flag value if provided, otherwise use config file value
 	useFullMode := *fullMode || config.Current.FullMode
 
-	// Pass the mode flag to the modes package so handlers can access it.
-	modes.IsFullMode = useFullMode
 	http.HandleFunc("/gethosts", modes.GetHostsHandler)
 
 	if useFullMode {

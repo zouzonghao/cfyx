@@ -47,29 +47,15 @@ func InsertIP(ip string, groupName string) error {
 	return err
 }
 
-// GetLatestIPsByGroup retrieves the most recently added IPs for a specific group, up to a given limit.
-func GetLatestIPsByGroup(groupName string, limit int) ([]string, error) {
-	var ips []string
-	querySQL := `SELECT ip FROM ip_info WHERE group_name = ? ORDER BY add_time DESC LIMIT ?`
-	rows, err := DB.Query(querySQL, groupName, limit)
+// GetGroupByIP returns the group name for the most recent record of the given IP.
+func GetGroupByIP(ip string) (string, error) {
+	var group string
+	querySQL := `SELECT group_name FROM ip_info WHERE ip = ? ORDER BY add_time DESC LIMIT 1`
+	err := DB.QueryRow(querySQL, ip).Scan(&group)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var ip string
-		if err := rows.Scan(&ip); err != nil {
-			return nil, err
-		}
-		ips = append(ips, ip)
-	}
-
-	if err = rows.Err(); err != nil {
-		return nil, err
-	}
-
-	return ips, nil
+	return group, nil
 }
 
 // FilterExistingIPs takes a slice of IPs and returns only those that do not already exist in the database.
