@@ -1,36 +1,32 @@
 package config
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
 func TestUpdateManualSettings(t *testing.T) {
-	directory := t.TempDir()
-	path := filepath.Join(directory, "config.yaml")
-	if err := os.WriteFile(path, []byte("groupRules:\n  JP: [[\"Japan\"]]\nhostMap:\n  example.com:\n    group: JP\n    id: record\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	LoadConfig(path)
-	if err := UpdateManualSettings(true, map[string]string{"JP": "203.0.113.10"}); err != nil {
+	Current = AppConfig{GroupRules: map[string][][]string{"JP": {{"Japan"}}, "SG": {{"Singapore"}}}}
+	manualMode = false
+	manualIPs = make(map[string]string)
+	if err := UpdateManualSettings(true, map[string]string{"JP": "203.0.113.10", "SG": ""}); err != nil {
 		t.Fatalf("UpdateManualSettings returned error: %v", err)
 	}
 	manualMode, manualIPs := ManualSettings()
 	if !manualMode || manualIPs["JP"] != "203.0.113.10" {
 		t.Fatalf("unexpected manual settings: mode=%t ips=%v", manualMode, manualIPs)
 	}
+	if _, ok := manualIPs["SG"]; ok {
+		t.Fatalf("empty manual IP should not be stored: %v", manualIPs)
+	}
 
 	if err := UpdateManualSettings(true, map[string]string{"JP": "not-an-ip"}); err == nil {
 		t.Fatal("UpdateManualSettings accepted an invalid IPv4 address")
 	}
-	if err := UpdateManualSettings(true, map[string]string{}); err == nil {
-		t.Fatal("UpdateManualSettings accepted missing manual IPs")
+	if err := UpdateManualSettings(false, nil); err != nil {
+		t.Fatalf("UpdateManualSettings could not disable manual mode: %v", err)
 	}
-
-	LoadConfig(path)
-	if !Current.ManualMode || Current.ManualIPs["JP"] != "203.0.113.10" {
-		t.Fatalf("settings were not persisted: %+v", Current)
+	manualMode, manualIPs = ManualSettings()
+	if manualMode || len(manualIPs) != 0 {
+		t.Fatalf("manual settings were not cleared: mode=%t ips=%v", manualMode, manualIPs)
 	}
 }

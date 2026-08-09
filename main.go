@@ -134,7 +134,6 @@ func main() {
 
 	configPath, _ := filepath.Abs("config.yaml")
 	config.LoadConfig(configPath)
-	modes.LoadManualIPs()
 
 	if config.Current.Timezone != "" {
 		if loc, err := time.LoadLocation(config.Current.Timezone); err == nil {
